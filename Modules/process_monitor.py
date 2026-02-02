@@ -4,6 +4,19 @@ Captures real-time process creation events with full context.
 Supports Windows 10/11 and Windows Server.
 """
 
+import sys
+import io
+
+# Fix Windows console encoding issues
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
+
 import json
 import logging
 import ctypes
@@ -165,8 +178,8 @@ class ProcessMonitor:
                             event.signature_hits = signature_hits
                             event.risk_hint = f"Signature match: {', '.join(signature_hits)}"
                             self.logger.warning(
-                                f"🚨 Signature hit detected: {event.process_name} "
-                                f"(PID {event.pid}) → {signature_hits}"
+                                f"[!ALERT!] Signature hit detected: {event.process_name} "
+                                f"(PID {event.pid}) -> {signature_hits}"
                             )
                     except Exception as scan_err:
                         self.logger.debug(f"Signature scan failed for {event.executable_path}: {scan_err}")
@@ -191,9 +204,9 @@ class ProcessMonitor:
         self.logger.info(f"Logging events to: {self.log_file.absolute()}")
         
         if self.signature_scanner:
-            self.logger.info("✓ Signature scanning ENABLED (YARA)")
+            self.logger.info("[OK] Signature scanning ENABLED (YARA)")
         else:
-            self.logger.warning("✗ Signature scanning DISABLED (YARA not available)")
+            self.logger.warning("[FAIL] Signature scanning DISABLED (YARA not available)")
         
         retry_delay = 5
         
@@ -285,9 +298,9 @@ def main():
     print("=" * 70)
     
     if admin_status:
-        print("✓ Running with ADMINISTRATOR privileges → Full telemetry available")
+        print("[OK] Running with ADMINISTRATOR privileges -> Full telemetry available")
     else:
-        print("✗ Running WITHOUT administrator privileges → Limited telemetry")
+        print("[FAIL] Running WITHOUT administrator privileges -> Limited telemetry")
         print("  Recommendation: Run as Administrator")
     
     print("=" * 70)
@@ -310,13 +323,13 @@ def main():
         )
         monitor.start()
     except RuntimeError as e:
-        print(f"\n✗ Error: {e}", file=sys.stderr)
+        print(f"\n[FAIL] Error: {e}", file=sys.stderr)
         print("\nTroubleshooting:")
         print("- Run this script as Administrator")
         print("- Ensure WMI service is running: net start winmgmt")
         return 1
     except Exception as e:
-        print(f"\n✗ Unexpected error: {e}", file=sys.stderr)
+        print(f"\n[FAIL] Unexpected error: {e}", file=sys.stderr)
         if args.verbose:
             import traceback
             traceback.print_exc()
