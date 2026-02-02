@@ -1,3 +1,5 @@
+import "pe"
+
 rule Win32_Ransomware_Conti
 {
     meta:
