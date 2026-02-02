@@ -1,3 +1,5 @@
+import "pe"
+
 rule Ransomware_Generic_Binary_Patterns
 {
     meta:
