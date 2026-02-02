@@ -26,6 +26,6 @@ rule Win32_Ransomware_LockBit
     condition:
         uint16(0) == 0x5A4D and  // PE magic
         filesize > 30KB and filesize < 5MB and
-        (1 of ($enum_resources*) or  // Code
+        ((1 of ($enum_resources*) or 1 of ($code*)) or  // Code patterns
         2 of ($str*))  // Strings
 }
