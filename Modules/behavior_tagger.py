@@ -1,8 +1,8 @@
 """
-Behavior Tagger Module - Enhanced Ransomware Detection Edition
+Behavior Tagger Module - Human-Operated Ransomware Detection
 Real-time event processing with ransomware-specific behavioral patterns.
 
-ENHANCED FEATURES:
+FEATURES:
 - Ransomware-specific command pattern detection
 - Shadow copy deletion monitoring
 - Boot configuration manipulation detection
@@ -18,6 +18,19 @@ RANSOMWARE FAMILIES COVERED:
 - BlackCat/ALPHV
 - Generic ransomware patterns
 """
+
+import sys
+import io
+
+# Fix Windows console encoding issues
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 
 import json
 import time
@@ -528,9 +541,10 @@ class StreamingBehaviorTagger:
         4. Session context accumulation
         5. Confidence scoring (enhanced with ransomware weight)
         """
-        proc_name = event_data.get("process_name", "").lower()
-        cmdline = event_data.get("command_line", "")
-        parent = event_data.get("parent_process_name", "").lower()
+        # NULL-SAFE: Handle None values gracefully
+        proc_name = (event_data.get("process_name") or "").lower()
+        cmdline = event_data.get("command_line") or ""
+        parent = (event_data.get("parent_process_name") or "").lower()
         username = event_data.get("username")
         
         tags = []
