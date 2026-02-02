@@ -26,6 +26,6 @@ rule Win32_Ransomware_Ryuk
     condition:
         uint16(0) == 0x5A4D and
         filesize > 30KB and filesize < 1MB and
-        (1 of ($code*) or  // Encryption code
+        ((1 of ($code*) or 1 of ($encrypt*)) or  // Encryption code
         2 of ($str*))  // Strings
 }
