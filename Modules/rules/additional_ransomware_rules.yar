@@ -165,7 +165,8 @@ rule Win32_Ransomware_Cuba
         (
             (1 of ($code*) and 2 of ($str*)) or
             (3 of ($str*)) or
-            (2 of ($cuba*) and 1 of ($str*))
+            (2 of ($cuba*) and 1 of ($str*)) or
+            ($mutex1)
         )
 }
 
@@ -215,7 +216,8 @@ rule Win32_Ransomware_Play
         (
             (1 of ($code*) and 2 of ($str*)) or
             (3 of ($str*)) or
-            (2 of ($str*) and 1 of ($behavior*))
+            (2 of ($str*) and 1 of ($behavior*)) or
+            (1 of ($net*) and 1 of ($str*))
         )
 }
 
@@ -355,5 +357,4 @@ rule Ransomware_Memory_Only_Indicators
             (1 of ($ps*) and 2 of ($api*)) or
             (1 of ($obf*) and 1 of ($api*) and 1 of ($ps*))
         )
-    }
 }
