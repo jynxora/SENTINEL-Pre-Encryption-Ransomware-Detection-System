@@ -1,5 +1,5 @@
 """
-Process Monitor Module - Windows Only
+Process Monitor Module - Windows Only (FIXED VERSION)
 Captures real-time process creation events with full context.
 Supports Windows 10/11 and Windows Server.
 """
@@ -13,10 +13,17 @@ from typing import Optional
 from dataclasses import dataclass, asdict
 import wmi
 import time
-from signature_scanner import SignatureScanner
+
+# Optional YARA import - graceful degradation if not available
+try:
+    from signature_scanner import SignatureScanner
+    SIGNATURE_SCANNER_AVAILABLE = True
+except ImportError:
+    SIGNATURE_SCANNER_AVAILABLE = False
+
 
 def is_admin() -> bool:
-    """Check if the script is running with administrator privileges."""
+    """Checking if the script is running with administrator privileges."""
     try:
         return ctypes.windll.shell32.IsUserAnAdmin() != 0
     except Exception:
@@ -49,7 +56,20 @@ class ProcessMonitor:
         self.auto_reconnect = auto_reconnect
         self.running = False
         self._setup_logging()
-        self.signature_scanner = SignatureScanner(rules_dir="rules/")
+        
+        # Initialize signature scanner if available
+        self.signature_scanner = None
+        if SIGNATURE_SCANNER_AVAILABLE:
+            try:
+                self.signature_scanner = SignatureScanner(rules_dir="rules/")
+                self.logger.info("Signature scanner initialized successfully")
+            except Exception as e:
+                self.logger.warning(f"Signature scanner unavailable: {e}")
+                self.logger.warning("Continuing without signature scanning")
+        else:
+            self.logger.warning("signature_scanner module not found - YARA scanning disabled")
+            self.logger.warning("Install with: pip install yara-python")
+        
         try:
             self.wmi_connection = wmi.WMI()
         except Exception as e:
@@ -103,10 +123,15 @@ class ProcessMonitor:
         return (None, None)
     
     def _create_event(self, process) -> Optional[ProcessEvent]:
-        """Create ProcessEvent from WMI process object."""
+        """
+        Create ProcessEvent from WMI process object.
+        """
+        event = None  # Initialize to prevent NameError in exception handler
         try:
+            # Create base event object
             parent_pid = int(process.ParentProcessId) if process.ParentProcessId else None
             parent_name, parent_cmdline = self._get_parent_process_info(parent_pid)
+            
             event = ProcessEvent(
                 timestamp=datetime.now().isoformat(),
                 process_name=process.Name,
@@ -119,21 +144,38 @@ class ProcessMonitor:
                 parent_command_line=parent_cmdline,
             )
 
-            if event.executable_path:
-                try:
-                    signature_hits = self.signature_scanner.scan(event.executable_path)
-                    if signature_hits:
-                        event.signature_hits = signature_hits
-                        event.risk_hint = f"Signature match: {', '.join(signature_hits)}"
-                        self.logger.info(
-                            f"Signature hit detected: {event.process_name} "
-                            f"(PID {event.pid}) → {signature_hits}"
-                        )
-                except Exception as scan_err:
-                    self.logger.debug(
-                        f"Signature scan failed for {event.executable_path}: {scan_err}"
-                    )
+            # Optional signature scanning (separate try-catch to isolate failures)
+            if self.signature_scanner and event.executable_path:
+                # Skip common benign paths to reduce I/O
+                skip_prefixes = [
+                    r"C:\Windows\System32", 
+                    r"C:\Windows\SysWOW64", 
+                    r"C:\Program Files"
+                ]
+                
+                should_scan = not any(
+                    event.executable_path.lower().startswith(prefix.lower()) 
+                    for prefix in skip_prefixes
+                )
+                
+                if should_scan:
+                    try:
+                        signature_hits = self.signature_scanner.scan(event.executable_path)
+                        if signature_hits:
+                            event.signature_hits = signature_hits
+                            event.risk_hint = f"Signature match: {', '.join(signature_hits)}"
+                            self.logger.warning(
+                                f"🚨 Signature hit detected: {event.process_name} "
+                                f"(PID {event.pid}) → {signature_hits}"
+                            )
+                    except Exception as scan_err:
+                        self.logger.debug(f"Signature scan failed for {event.executable_path}: {scan_err}")
+                        # Don't fail event creation if scan fails
+                else:
+                    self.logger.debug(f"Skipping scan for benign path: {event.executable_path}")
+            
             return event
+            
         except Exception as e:
             self.logger.debug(f"Failed to create event from process: {e}")
             return None
@@ -147,6 +189,11 @@ class ProcessMonitor:
         self.running = True
         self.logger.info("Starting Windows process monitor...")
         self.logger.info(f"Logging events to: {self.log_file.absolute()}")
+        
+        if self.signature_scanner:
+            self.logger.info("✓ Signature scanning ENABLED (YARA)")
+        else:
+            self.logger.warning("✗ Signature scanning DISABLED (YARA not available)")
         
         retry_delay = 5
         
@@ -173,6 +220,9 @@ class ProcessMonitor:
                             event = self._create_event(new_process)
                             if event:
                                 self._log_event(event)
+                            else:
+                                self.logger.debug("Event creation returned None (likely benign failure)")
+                                
                     except wmi.x_wmi_timed_out:
                         continue
                     except wmi.x_wmi as e:
@@ -215,7 +265,7 @@ def main():
     admin_status = is_admin()
     
     parser = argparse.ArgumentParser(
-        description="Windows Process Creation Monitor",
+        description="Windows Process Creation Monitor (FIXED VERSION)",
         epilog="Administrator privileges recommended for full functionality."
     )
     parser.add_argument('--log-file', default='process_events.jsonl',
@@ -231,7 +281,7 @@ def main():
         logging.getLogger("ProcessMonitor").setLevel(logging.DEBUG)
     
     print("=" * 70)
-    print("Windows Process Monitor")
+    print("Windows Process Monitor (FIXED VERSION)")
     print("=" * 70)
     
     if admin_status:
@@ -243,6 +293,12 @@ def main():
     print("=" * 70)
     print(f"Log file: {args.log_file}")
     print(f"Auto-reconnect: {'Enabled' if not args.no_auto_reconnect else 'Disabled'}")
+    
+    if SIGNATURE_SCANNER_AVAILABLE:
+        print(f"Signature scanning: ENABLED (YARA)")
+    else:
+        print(f"Signature scanning: DISABLED (install yara-python to enable)")
+    
     print("Press Ctrl+C to stop monitoring")
     print("=" * 70)
     print()
