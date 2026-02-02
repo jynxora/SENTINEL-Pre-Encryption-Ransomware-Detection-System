@@ -10,7 +10,7 @@ rule Ransomware_Command_Abuse
         false_positive_risk = "Medium - admins may use similar commands"
 
     strings:
-        // Shadow Copy Deletion (Your original + expansions)
+        // Shadow Copy Deletion
         $shadow1 = "vssadmin delete shadows" ascii nocase
         $shadow2 = "vssadmin.exe delete shadows" ascii nocase
         $shadow3 = "delete shadows /all" ascii nocase
@@ -57,5 +57,15 @@ rule Ransomware_Command_Abuse
         $lateral5 = "net use \\\\" ascii nocase  // UNC paths
 
     condition:
-        any of them
+        (
+            (2 of ($shadow*)) or
+            (2 of ($boot*)) or
+            (1 of ($shadow*) and 1 of ($boot*)) or
+            (2 of ($backup*)) or
+            (3 of ($service*)) or
+            (2 of ($encrypt*)) or
+            (2 of ($lateral*)) or
+            (1 of ($shadow*) and 1 of ($service*)) or
+            (1 of ($boot*) and 1 of ($backup*))
+        )
 }
