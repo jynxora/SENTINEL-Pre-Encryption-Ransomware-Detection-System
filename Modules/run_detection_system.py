@@ -9,6 +9,19 @@ PRODUCTION DEPLOYMENT:
 - Clean shutdown handling
 """
 
+import io
+
+# Fix Windows console encoding issues
+import sys
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
+
 import sys
 import time
 import signal
@@ -89,8 +102,8 @@ class DetectionSystemCoordinator:
         """
         if event.confidence in ["medium", "high"]: 
             # alerts are signals, not verdicts
-            # medium ≠ notify, maybe log only
-            # high ≠ kill, maybe escalate
+            # medium != notify, maybe log only
+            # high != kill, maybe escalate
             # Log to alerts file
             with open(self.alert_log, 'a', encoding='utf-8') as f:
                 f.write(event.to_json_line() + '\n')
@@ -112,9 +125,9 @@ class DetectionSystemCoordinator:
         Monitor system resource usage.
         
         PROTECTION MECHANISM:
-        - If detection system uses >5% CPU → log warning
-        - If detection system uses >100MB RAM → log warning
-        - If system CPU >90% → pause non-critical processing
+        - If detection system uses >5% CPU -> log warning
+        - If detection system uses >100MB RAM -> log warning
+        - If system CPU >90% -> pause non-critical processing
         """
         process = psutil.Process()
         
