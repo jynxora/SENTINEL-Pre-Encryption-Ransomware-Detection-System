@@ -1,5 +1,5 @@
 """
-Enhanced Behavior Tags Configuration
+Behavior Tags Configuration
 Centralized taxonomy with ransomware-specific classifications.
 
 RANSOMWARE DETECTION PHILOSOPHY:
@@ -25,7 +25,7 @@ from typing import Dict, Set, List
 from typing import Optional
 
 # ============================================================================
-# ENHANCED TAG TAXONOMY WITH RANSOMWARE FOCUS
+# TAG TAXONOMY WITH RANSOMWARE FOCUS
 # ============================================================================
 
 TAG_DESCRIPTIONS = {
