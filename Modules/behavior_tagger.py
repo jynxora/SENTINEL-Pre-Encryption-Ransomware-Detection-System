@@ -747,12 +747,6 @@ class FileStreamProcessor:
                 f.seek(0, 2)
                 self._file_position = f.tell()
         
-        print(f"Enhanced Ransomware Detection Processor started")
-        print(f"  Input: {self.input_file}")
-        print(f"  Output: {self.output_file}")
-        print(f"  Poll interval: {self.poll_interval}s")
-        print(f"  Ransomware patterns loaded: ENABLED")
-        
         while self.running:
             try:
                 if not self.input_file.exists():
@@ -777,16 +771,6 @@ class FileStreamProcessor:
                 time.sleep(self.poll_interval)
         
         self.stop()
-    
-    def stop(self):
-        """Stop the processor."""
-        self.running = False
-        stats = self.tagger.get_stats()
-        print(f"\nProcessor stopped")
-        print(f"  Events processed: {stats['events_processed']}")
-        print(f"  Tags applied: {stats['tags_applied']}")
-        print(f"  Ransomware detections: {stats['ransomware_detections']}")
-
 
 # ============================================================================
 # THREADED PROCESSOR
@@ -803,7 +787,6 @@ class ThreadedTagger:
         """Start processing in background thread."""
         self.thread = threading.Thread(target=self.processor.start, daemon=True)
         self.thread.start()
-        print("Enhanced ransomware detection tagger started")
     
     def stop(self):
         """Stop background processing."""
@@ -811,7 +794,6 @@ class ThreadedTagger:
             self.processor.stop()
         if self.thread:
             self.thread.join(timeout=5)
-        print("Background tagger stopped")
     
     def get_stats(self) -> Dict:
         """Get processing statistics."""
