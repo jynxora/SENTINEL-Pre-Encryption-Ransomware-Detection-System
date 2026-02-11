@@ -1,5 +1,5 @@
 """
-Process Monitor Module - Windows Only (FIXED VERSION)
+Process Monitor Module - Windows Host Based Process Creation Detection
 Captures real-time process creation events with full context.
 Supports Windows 10/11 and Windows Server.
 """
@@ -16,7 +16,6 @@ if sys.platform == 'win32':
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
-
 import json
 import logging
 import ctypes
@@ -27,7 +26,6 @@ from dataclasses import dataclass, asdict
 import wmi
 import time
 
-# Optional YARA import - graceful degradation if not available
 try:
     from signature_scanner import SignatureScanner
     SIGNATURE_SCANNER_AVAILABLE = True
@@ -75,14 +73,11 @@ class ProcessMonitor:
         if SIGNATURE_SCANNER_AVAILABLE:
             try:
                 self.signature_scanner = SignatureScanner(rules_dir="rules/")
-                self.logger.info("Signature scanner initialized successfully")
             except Exception as e:
                 self.logger.warning(f"Signature scanner unavailable: {e}")
                 self.logger.warning("Continuing without signature scanning")
         else:
             self.logger.warning("signature_scanner module not found - YARA scanning disabled")
-            self.logger.warning("Install with: pip install yara-python")
-        
         try:
             self.wmi_connection = wmi.WMI()
         except Exception as e:
@@ -200,14 +195,6 @@ class ProcessMonitor:
         Uses WMI event notifications for real-time detection.
         """
         self.running = True
-        self.logger.info("Starting Windows process monitor...")
-        self.logger.info(f"Logging events to: {self.log_file.absolute()}")
-        
-        if self.signature_scanner:
-            self.logger.info("[OK] Signature scanning ENABLED (YARA)")
-        else:
-            self.logger.warning("[FAIL] Signature scanning DISABLED (YARA not available)")
-        
         retry_delay = 5
         
         while self.running:
@@ -223,9 +210,6 @@ class ProcessMonitor:
                         break
                 
                 process_watcher = self.wmi_connection.Win32_Process.watch_for("creation")
-                
-                self.logger.info("Monitor active. Press Ctrl+C to stop.")
-                
                 while self.running:
                     try:
                         new_process = process_watcher(timeout_ms=100)
@@ -267,7 +251,6 @@ class ProcessMonitor:
     def stop(self):
         """Stop the process monitor."""
         self.running = False
-        self.logger.info("Process monitor stopped")
 
 
 def main():
@@ -311,10 +294,6 @@ def main():
         print(f"Signature scanning: ENABLED (YARA)")
     else:
         print(f"Signature scanning: DISABLED (install yara-python to enable)")
-    
-    print("Press Ctrl+C to stop monitoring")
-    print("=" * 70)
-    print()
     
     try:
         monitor = ProcessMonitor(
