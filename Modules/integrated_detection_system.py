@@ -50,12 +50,14 @@ try:
     from process_monitor import ProcessMonitor
     from behavior_tagger import ThreadedTagger, TaggedEvent
     from temporal_observers import TemporalBehaviorCoordinator
+    from decision_engine import DecisionEngine
 except ImportError as e:
     print(f"Error importing modules: {e}")
     print("Ensure all module files are in the same directory:")
     print("  - process_monitor.py")
     print("  - behavior_tagger.py")
     print("  - temporal_observers.py")
+    print("  - decision_engine.py")
     sys.exit(1)
 
 
@@ -84,6 +86,7 @@ class IntegratedDetectionSystem:
         self.process_monitor: Optional[ProcessMonitor] = None
         self.behavior_tagger: Optional[ThreadedTagger] = None
         self.temporal_coordinator: Optional[TemporalBehaviorCoordinator] = None
+        self.decision_engine = DecisionEngine(rules_dir="rules/")
         
         self.running = False
         self.stopping = False
@@ -177,24 +180,38 @@ class IntegratedDetectionSystem:
     
     def _alert_callback(self, event: TaggedEvent):
         """
-        Callback for high-confidence events from Module 2.
-        
-        Args:
-            event: TaggedEvent from behavior_tagger
+        Callback invoked by Module 2 for every tagged event.
+        Passes the event through Module 3 (DecisionEngine) which:
+          - Computes a proper weighted score from BEHAVIOR_TAGS
+          - Maps score → LOW / MEDIUM / HIGH / CRITICAL via RISK_THRESHOLDS
+          - Triggers YARA only when score >= MEDIUM threshold
+          - Returns a DecisionResult consumed by Module 5
         """
-        if event.confidence in ["medium", "high"]: 
-            # Log to alerts file
-            try:
-                with open(self.alert_log, 'a', encoding='utf-8') as f:
-                    f.write(event.to_json_line() + '\n')
-            except Exception as e:
-                self.logger.error(f"Failed to write alert: {e}")
-            
-            # Console alert
+        result = self.decision_engine.evaluate(
+            event,
+            executable_path=event.executable_path
+        )
+
+        # Write every decision to the alert log (Module 5 reads this)
+        try:
+            with open(self.alert_log, 'a', encoding='utf-8') as f:
+                f.write(result.to_json_line() + '\n')
+        except Exception as e:
+            self.logger.error(f"Failed to write decision result: {e}")
+
+        # Console alert only for MEDIUM and above
+        if result.level in ("medium", "high", "critical"):
+            yara_note = ""
+            if result.yara_hits:
+                yara_note = f" | YARA: {', '.join(result.yara_hits)}"
+            elif result.yara_triggered:
+                yara_note = " | YARA: no match"
+
             self.logger.warning(
-                f"[{event.confidence.upper()}] {event.process_name} - "
-                f"Tags: {', '.join(event.tags[:3])}"
+                f"[{result.level.upper():8s}] score={result.total_score:3d} | "
+                f"{result.process_name} (PID {result.pid}){yara_note}"
             )
+            self.logger.warning(f"           Action : {result.recommended_action}")
     
     def _monitor_resources(self):
         """
@@ -245,9 +262,10 @@ class IntegratedDetectionSystem:
         self.logger.info("Starting Anti-Ransomware Detection System")
         self.logger.info("="*70)
         self.logger.info("Modules Active:")
-        self.logger.info("  [1] Process Monitor (WMI + YARA)")
-        self.logger.info("  [2] Behavior Tagger (Pattern Detection)")
-        self.logger.info("  [3] Temporal Observers")
+        self.logger.info("  [1] Process Monitor      — WMI telemetry capture")
+        self.logger.info("  [2] Behavior Tagger      — Pattern detection & scoring")
+        self.logger.info("  [3] Decision Engine      — Threshold gating & YARA trigger")
+        self.logger.info("  [4] Temporal Observers   — Time-window behavior tracking")
         self.logger.info("="*70)
         
         # Start resource monitoring (quiet)
@@ -348,21 +366,24 @@ class IntegratedDetectionSystem:
             "stopping": self.stopping,
             "module_1_active": self.process_monitor is not None,
             "module_2_active": self.behavior_tagger is not None,
-            "module_3_active": self.temporal_coordinator is not None,
+            "module_3_active": True,  # DecisionEngine is always instantiated
+            "module_4_active": self.temporal_coordinator is not None,
         }
-        
+
         if self.behavior_tagger:
             try:
                 status["module_2_stats"] = self.behavior_tagger.get_stats()
-            except:
+            except Exception:
                 pass
-        
+
+        status["module_3_stats"] = self.decision_engine.get_stats()
+
         if self.temporal_coordinator:
             try:
-                status["module_3_stats"] = self.temporal_coordinator.get_stats()
-            except:
+                status["module_4_stats"] = self.temporal_coordinator.get_stats()
+            except Exception:
                 pass
-        
+
         return status
 
 
