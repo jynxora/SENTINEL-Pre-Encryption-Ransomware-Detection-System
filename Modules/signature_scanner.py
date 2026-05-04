@@ -119,9 +119,7 @@ class SignatureScanner:
             return
         
         # Compile rules with detailed error handling
-        try:
-            self.logger.info(f"Compiling {len(rule_files)} YARA rule file(s)...")
-            
+        try:          
             # Validate each rule file before compilation
             valid_rules = {}
             for namespace, filepath in rule_files.items():
@@ -148,7 +146,7 @@ class SignatureScanner:
             if valid_rules:
                 self.compiled_rules = yara.compile(filepaths=valid_rules)
                 self.rule_count = len(valid_rules)
-                self.logger.info(f"Successfully compiled {self.rule_count} rule file(s): {', '.join(valid_rules.keys())}")
+                self.logger.info(f"Successfully compiled {self.rule_count} rule file(s):\n {',\n '.join(valid_rules.keys())}")
             else:
                 self.logger.error("No valid YARA rules to compile")
                 
