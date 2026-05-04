@@ -26,11 +26,9 @@ from dataclasses import dataclass, asdict
 import wmi
 import time
 
-try:
-    from signature_scanner import SignatureScanner
-    SIGNATURE_SCANNER_AVAILABLE = True
-except ImportError:
-    SIGNATURE_SCANNER_AVAILABLE = False
+# YARA signature scanning has been moved to Module 3 (decision_engine.py).
+# It runs only after Module 2 has scored the event.
+# process_monitor.py is pure telemetry — no detection logic here.
 
 
 def is_admin() -> bool:
@@ -54,7 +52,6 @@ class ProcessEvent:
     parent_command_line: Optional[str] = None
     risk_hint: Optional[str] = None
     event_type: str = "process_create"
-    signature_hits: Optional[list[str]] = None
     
     def to_json(self) -> str:
         """Convert event to JSON string."""
@@ -68,16 +65,6 @@ class ProcessMonitor:
         self.running = False
         self._setup_logging()
         
-        # Initialize signature scanner if available
-        self.signature_scanner = None
-        if SIGNATURE_SCANNER_AVAILABLE:
-            try:
-                self.signature_scanner = SignatureScanner(rules_dir="rules/")
-            except Exception as e:
-                self.logger.warning(f"Signature scanner unavailable: {e}")
-                self.logger.warning("Continuing without signature scanning")
-        else:
-            self.logger.warning("signature_scanner module not found - YARA scanning disabled")
         try:
             self.wmi_connection = wmi.WMI()
         except Exception as e:
@@ -152,36 +139,6 @@ class ProcessMonitor:
                 parent_command_line=parent_cmdline,
             )
 
-            # Optional signature scanning (separate try-catch to isolate failures)
-            if self.signature_scanner and event.executable_path:
-                # Skip common benign paths to reduce I/O
-                skip_prefixes = [
-                    r"C:\Windows\System32", 
-                    r"C:\Windows\SysWOW64", 
-                    r"C:\Program Files"
-                ]
-                
-                should_scan = not any(
-                    event.executable_path.lower().startswith(prefix.lower()) 
-                    for prefix in skip_prefixes
-                )
-                
-                if should_scan:
-                    try:
-                        signature_hits = self.signature_scanner.scan(event.executable_path)
-                        if signature_hits:
-                            event.signature_hits = signature_hits
-                            event.risk_hint = f"Signature match: {', '.join(signature_hits)}"
-                            self.logger.warning(
-                                f"[!ALERT!] Signature hit detected: {event.process_name} "
-                                f"(PID {event.pid}) -> {signature_hits}"
-                            )
-                    except Exception as scan_err:
-                        self.logger.debug(f"Signature scan failed for {event.executable_path}: {scan_err}")
-                        # Don't fail event creation if scan fails
-                else:
-                    self.logger.debug(f"Skipping scan for benign path: {event.executable_path}")
-            
             return event
             
         except Exception as e:
@@ -289,11 +246,7 @@ def main():
     print("=" * 70)
     print(f"Log file: {args.log_file}")
     print(f"Auto-reconnect: {'Enabled' if not args.no_auto_reconnect else 'Disabled'}")
-    
-    if SIGNATURE_SCANNER_AVAILABLE:
-        print(f"Signature scanning: ENABLED (YARA)")
-    else:
-        print(f"Signature scanning: DISABLED (install yara-python to enable)")
+    print("Signature scanning: handled by Module 3 (decision_engine.py)")
     
     try:
         monitor = ProcessMonitor(
