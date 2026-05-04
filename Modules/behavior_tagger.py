@@ -22,7 +22,6 @@ RANSOMWARE FAMILIES COVERED:
 import sys
 import io
 
-# Fix Windows console encoding issues
 if sys.platform == 'win32':
     try:
         sys.stdout.reconfigure(encoding='utf-8')
@@ -351,7 +350,7 @@ class FastPatternMatcher:
 
 
 # ============================================================================
-# BOUNDED SESSION TRACKER (Fixed Memory)
+# BOUNDED SESSION TRACKER
 # ============================================================================
 
 @dataclass
@@ -361,13 +360,13 @@ class SessionContext:
     shell_count: int = 0
     lolbin_count: int = 0
     script_count: int = 0
-    ransomware_indicator_count: int = 0  # NEW
-    shadow_copy_operations: int = 0  # NEW
-    service_manipulations: int = 0  # NEW
+    ransomware_indicator_count: int = 0
+    shadow_copy_operations: int = 0
+    service_manipulations: int = 0
     first_seen: float = 0.0
     last_seen: float = 0.0
     unique_procs: Set[str] = None
-    ransomware_tools_used: Set[str] = None  # NEW
+    ransomware_tools_used: Set[str] = None
     
     def __post_init__(self):
         if self.unique_procs is None:
@@ -417,7 +416,6 @@ class BoundedSessionTracker:
         session.last_seen = current_time
         session.unique_procs.add(process_name)
         
-        # Update counters (fast tag checks)
         if "interactive_shell" in tags:
             session.shell_count += 1
         if "living_off_the_land" in tags:
@@ -503,6 +501,7 @@ class TaggedEvent:
     tags: List[str]
     confidence: str
     ransomware_indicators: List[str]  # NEW
+    executable_path: Optional[str] = None  # passed through from ProcessEvent for YARA
     shell_count: int = 0
     lolbin_count: int = 0
     ransomware_score: int = 0  # NEW
@@ -543,7 +542,7 @@ class StreamingBehaviorTagger:
         """
         # NULL-SAFE: Handle None values gracefully
         proc_name = (event_data.get("process_name") or "").lower()
-        cmdline = event_data.get("command_line") or ""
+        cmdline = " ".join((event_data.get("command_line") or "").split())
         parent = (event_data.get("parent_process_name") or "").lower()
         username = event_data.get("username")
         
@@ -630,6 +629,7 @@ class StreamingBehaviorTagger:
             tags=tags,
             confidence=confidence,
             ransomware_indicators=ransomware_indicators,
+            executable_path=event_data.get("executable_path"),
             shell_count=session.shell_count if session else 0,
             lolbin_count=session.lolbin_count if session else 0,
             ransomware_score=ransomware_score
