@@ -390,11 +390,13 @@ The screenshots below show SENTINEL running against synthetic test data generate
 Three captures are most useful: the terminal output during a CRITICAL detection, the live dashboard in the browser, and an `alerts.jsonl` extract in a JSON viewer.
 
 ```markdown
-![Terminal — CRITICAL alert](docs/screenshots/terminal_critical.png)
+![Terminal — CRITICAL alert](screenshots/terminal_critical.png)
 
-![Dashboard — live event stream](docs/screenshots/dashboard_live.png)
+![Dashboard — live event stream](dashboard_live.png)
 
-![alerts.jsonl — CRITICAL entry](docs/screenshots/alerts_jsonl.png)
+![Dashboard — live event stream](dashboard_live2.png)
+
+![alerts.jsonl — CRITICAL entry](screenshots/alerts_jsonl.png)
 
 ```
 
