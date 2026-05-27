@@ -396,7 +396,7 @@ Three captures are most useful: the terminal output during a CRITICAL detection,
 
 ![Dashboard — live event stream](https://github.com/jynxora/SENTINEL-Pre-Encryption-Ransomware-Detection-System/blob/main/screenshots/dashboard_live2.png)
 
-[alerts.jsonl — CRITICAL entry](https://github.com/jynxora/SENTINEL-Pre-Encryption-Ransomware-Detection-System/blob/main/screenshots/alerts_jsonl.png)
+![alerts.jsonl — CRITICAL entry](https://github.com/jynxora/SENTINEL-Pre-Encryption-Ransomware-Detection-System/blob/main/screenshots/alerts_jsonl.png)
 
 
 To reproduce the POC sequence yourself:
