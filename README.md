@@ -1,5 +1,5 @@
 # SENTINEL
-**Pre-Encryption Human-Operated Ransomware (HoR) Detection System**
+**Pre-Encryption Human-Operated Ransomware Detection System**
 
 SENTINEL monitors Windows hosts for attacker behavior *before* the encryption payload executes — catching the reconnaissance, staging, and anti-recovery commands that operators run in the minutes to hours preceding file encryption. It combines real-time process telemetry, weighted behavioral tagging, temporal pattern correlation, YARA signature scanning, ML anomaly scoring, and a live browser dashboard into a single deployable Python system.
 
@@ -10,15 +10,8 @@ SENTINEL monitors Windows hosts for attacker behavior *before* the encryption pa
 ## Table of Contents
 
 - [Overview](#overview)
-- [Features](#features)
 - [Architecture](#architecture)
 - [Detection Pipeline](#detection-pipeline)
-  - [Module 1 — Process Monitor](#module-1--process-monitor)
-  - [Module 2 — Behavior Tagger](#module-2--behavior-tagger)
-  - [Module 3 — Temporal Observers](#module-3--temporal-observers)
-  - [Module 4 — Decision Engine](#module-4--decision-engine)
-  - [Module 5 — ML Anomaly Scorer](#module-5--ml-anomaly-scorer)
-  - [Module 6 — Evidence & Output Layer](#module-6--evidence--output-layer)
 - [YARA Signatures](#yara-signatures)
 - [Scoring & Risk Thresholds](#scoring--risk-thresholds)
 - [MITRE ATT&CK Coverage](#mitre-attck-coverage)
@@ -37,35 +30,9 @@ SENTINEL monitors Windows hosts for attacker behavior *before* the encryption pa
 
 ## Overview
 
-Human-Operated Ransomware (HoR) attacks — LockBit, BlackCat/ALPHV, Conti, REvil, Ryuk — share a consistent pre-encryption playbook:
+Human-Operated Ransomware (HoR) attacks — LockBit, BlackCat/ALPHV, Conti, REvil, Ryuk — share a consistent pre-encryption playbook. Before a single file is touched, an operator works through discovery (`net view`, `whoami /all`), credential access (`mimikatz`, `procdump lsass`), anti-recovery (`vssadmin delete shadows /all /quiet`), boot sabotage (`bcdedit /set {default} bootstatuspolicy ignoreallfailures`), backup deletion (`wbadmin delete catalog -quiet`), lateral movement (`psexec \\target`, `wmic /node:`), and persistence via Registry Run keys or scheduled tasks.
 
-| Stage | Typical Commands | MITRE |
-|---|---|---|
-| Discovery | `net view`, `net share`, `ipconfig /all`, `whoami /all` | T1135, T1033 |
-| Credential Access | `mimikatz`, `procdump lsass`, `reg save HKLM\SAM` | T1003 |
-| Anti-Recovery | `vssadmin delete shadows /all /quiet` | T1490 |
-| Boot Sabotage | `bcdedit /set {default} bootstatuspolicy ignoreallfailures` | T1490 |
-| Backup Deletion | `wbadmin delete catalog -quiet` | T1490 |
-| Lateral Movement | `psexec \\target`, `wmic /node: process call create` | T1021 |
-| Persistence | Registry Run keys, scheduled tasks | T1547 |
-
-SENTINEL intercepts every process creation on the Windows host, scores the command line in real time, and raises structured alerts before a single file is encrypted. At `CRITICAL` level, the system recommends immediate isolation.
-
----
-
-## Features
-
-- **6-layer detection pipeline** — telemetry → tagging → temporal correlation → decision engine → ML scoring → output
-- **Weighted behavioral scoring** — 40+ behavior tags with per-tag weights, scoped to `event` or `session`
-- **Temporal pattern detection** — privilege escalation, lateral movement, mass file I/O, and ransom note drops tracked over sliding time windows
-- **YARA corroboration** — triggered only after rule-engine crosses `MEDIUM` threshold; 8 rule files covering 9 ransomware families
-- **ML augmentation** — `IsolationForest` + `GradientBoostingClassifier` ensemble; <5ms per event; <20MB footprint
-- **4 alert levels** — `LOW / MEDIUM / HIGH / CRITICAL` with defined response SLAs
-- **MITRE ATT&CK mapping** — every tag resolves to a technique ID
-- **Live browser dashboard** — Flask + WebSocket; real-time event stream, stats, ML scores
-- **Machine-readable output** — `alerts.jsonl` + `alert_summary.json` for SIEM/SOAR integration
-- **Zero kernel-mode code** — pure Python, WMI, and Win32 APIs; deployable without driver signing
-- **Exclusion rules** — known-good patterns whitelist to suppress Windows Update, scheduled tasks, and admin tooling
+SENTINEL intercepts every process creation on the Windows host, scores the command line in real time, and raises structured alerts before a single file is encrypted. At `CRITICAL` level the system recommends immediate isolation.
 
 ---
 
@@ -142,156 +109,77 @@ SENTINEL intercepts every process creation on the Windows host, scores the comma
 
 ### Module 1 — Process Monitor
 
-`process_monitor.py` subscribes to WMI `Win32_Process` creation events using a polling watcher (`timeout_ms=100`). For every new process it resolves:
-
-- Process name, PID, command line, executable path
-- Owner (domain\username) via `GetOwner()`
-- Parent process name and command line (for parent-child analysis)
-
-The module is **pure telemetry** — no detection logic. Events are appended to `process_events.jsonl` as JSON Lines for downstream consumption. Administrator privileges are required for full telemetry; the module degrades gracefully without them.
-
-**Resilience:** Automatic WMI reconnection with configurable retry delay. The watcher loop restarts transparently after transient WMI service failures.
+`process_monitor.py` subscribes to WMI `Win32_Process` creation events using a polling watcher at `timeout_ms=100`. For every new process it captures the name, PID, command line, and executable path, resolves the owner via `GetOwner()`, and pulls the parent process name and command line for downstream parent-child analysis. The module is pure telemetry with no detection logic — events are appended to `process_events.jsonl` for everything downstream to consume. If the WMI service drops, the watcher reconnects automatically. Running without Administrator privileges degrades telemetry silently rather than crashing.
 
 ---
 
 ### Module 2 — Behavior Tagger
 
-`behavior_tagger.py` processes the event stream from Module 1 and attaches a list of behavior tags to each event. Tagging operates in three layers:
+`behavior_tagger.py` takes the raw event stream and attaches a list of behavior tags to each event across three passes.
 
-**Tool classification** — O(1) lookup against a static dictionary of 30+ known executables. Each tool carries one or more class labels (`interactive_shell`, `script_engine`, `ransomware_tool`, `download_capable`, etc.).
+**Tool classification** hits an O(1) dictionary of 30+ known executables. Each tool carries one or more class labels — `interactive_shell`, `script_engine`, `ransomware_tool`, `download_capable`, and so on — so the downstream scorer immediately knows the process category before reading a single character of the command line.
 
-**Command pattern matching** — Regex and substring matching against the full command line for ransomware-specific patterns:
+**Command pattern matching** then runs regex and substring checks against the full command line for ransomware-specific strings. Shadow copy deletion is caught via `vssadmin delete shadows` and `wmic shadowcopy delete`. Boot manipulation via `bcdedit /set`, `bootstatuspolicy ignoreallfailures`, and `recoveryenabled no`. Backup deletion via `wbadmin delete catalog` and `wbadmin delete backup`. Credential access via `mimikatz`, `procdump.*lsass`, and `reg save HKLM\SAM`. Obfuscation via Base64 `-EncodedCommand` and `FromBase64String`. Network discovery via `net view`, `net share`, and `arp -a`. Lateral movement via `psexec`, `wmic /node:`, `winrm`, and `Enter-PSSession`. Persistence via Registry Run key writes and `schtasks /create`. Service manipulation via `sc stop`, `net stop`, and `taskkill` calls targeting AV and backup services.
 
-| Pattern Category | Example Patterns Detected |
-|---|---|
-| Shadow copy deletion | `vssadmin delete shadows`, `wmic shadowcopy delete` |
-| Boot manipulation | `bcdedit /set`, `bootstatuspolicy ignoreallfailures`, `recoveryenabled no` |
-| Backup deletion | `wbadmin delete catalog`, `wbadmin delete backup` |
-| Credential access | `mimikatz`, `procdump.*lsass`, `reg save HKLM\SAM` |
-| Obfuscation | Base64 `-EncodedCommand`, `-Enc `, `FromBase64String` |
-| Network discovery | `net view`, `net share`, `arp -a` |
-| Lateral movement | `psexec`, `wmic /node:`, `winrm`, `Enter-PSSession` |
-| Persistence | Registry Run key writes, `schtasks /create` |
-| Service manipulation | `sc stop`, `net stop`, `taskkill` targeting AV/backup services |
+**Session accumulation** runs in parallel, maintaining a per-user state that counts shells opened, LOLBins executed, ransomware-tool invocations, and shadow copy operations within the current session window. Once those counts cross configured thresholds, session-scoped tags fire — `multiple_ransomware_indicators`, `multiple_ransomware_tools`, `repeated_shell_activity` — giving the scorer a view of the operator's session arc, not just the individual command.
 
-**Session accumulation** — A per-user session state tracks the count of shells, LOLBins, ransomware-tool uses, and shadow copy operations in the current session window. Accumulated counts trigger session-scoped tags (`multiple_ransomware_indicators`, `multiple_ransomware_tools`, `repeated_shell_activity`).
-
-**Exclusion filtering** — Known-good patterns (Windows Update, System32 scheduled maintenance, whitelisted admin scripts) are stripped before scoring to reduce false positives.
-
-Output: `TaggedEvent` (original process fields + `tags: List[str]` + `confidence` + `ransomware_indicators` subset).
+Known-good patterns (Windows Update, System32 scheduled maintenance, whitelisted admin scripts) are stripped by an exclusion filter before any tags are attached. Output is a `TaggedEvent` carrying the original process fields alongside `tags`, `confidence`, and the `ransomware_indicators` subset.
 
 ---
 
 ### Module 3 — Temporal Observers
 
-`temporal_observers.py` runs four concurrent observers that detect behaviors visible only *over time*, not in a single process creation event.
+`temporal_observers.py` runs four concurrent observers that catch behaviors that only become visible over time — things that a single process creation event can never tell you.
 
-**PrivilegeEscalationObserver** — Reads the Windows integrity level token of every process via `win32security`. Flags transitions from Medium → High/System integrity that aren't explainable by known-system parent processes (e.g., WerFault, TiWorker). The known-system-parent whitelist prevents alerting on legitimate OS-elevated child processes.
+**PrivilegeEscalationObserver** reads the Windows integrity level token of every process via `win32security`. It flags transitions from Medium to High or System integrity that can't be explained by known system parent processes like WerFault or TiWorker. The whitelist prevents the observer from alerting every time the OS legitimately elevates a child process.
 
-**LateralMovementObserver** — Monitors for PsExec execution, `wmic /node:` remote process creation, WinRM (`winrs`, `Enter-PSSession`), and SMB admin share access patterns (`\\target\C$`, `\\target\ADMIN$`). A sliding 5-minute window counts lateral tool executions; exceeding the threshold fires a `HIGH` behavior event.
+**LateralMovementObserver** watches for PsExec execution, `wmic /node:` remote process creation, WinRM invocations, and SMB admin share access patterns. A sliding 5-minute window counts lateral tool uses; exceeding the threshold fires a `HIGH` behavior event to `temporal_behaviors.jsonl`. During testing this observer fired on `CORP\jsmith` running `net.exe` with remote targets, exactly as expected — those events are visible in `temporal_behaviors.jsonl`.
 
-**FileIOObserver** — Uses `ReadDirectoryChangesW` on user-writeable paths to count file creation, modification, rename, and deletion events. Mass-rename patterns (e.g., thousands of files gaining a new extension within seconds) and mass-deletion are flagged as pre-encryption staging behavior.
+**FileIOObserver** uses `ReadDirectoryChangesW` on user-writeable paths to track file creation, modification, rename, and deletion rates. Mass-rename patterns — thousands of files gaining a new extension within seconds — and mass-deletion are flagged as pre-encryption staging. This is the closest SENTINEL gets to catching encryption in motion without a kernel driver.
 
-**RansomNoteScanner** — Scans newly created `.txt` and `.html` files for ransom note content markers (`decrypt`, `bitcoin`, `YOUR FILES ARE ENCRYPTED`, BTC address patterns, `.onion` URLs). A match fires an immediate `CRITICAL` behavior event — if a note has been dropped, encryption may already be underway.
-
-All four observers emit `BehaviorEvent` objects to `temporal_behaviors.jsonl` for Campaign Correlator consumption.
+**RansomNoteScanner** scans newly created `.txt` and `.html` files for ransom note content markers: `decrypt`, `bitcoin`, `YOUR FILES ARE ENCRYPTED`, BTC address patterns, `.onion` URLs. A match is an immediate `CRITICAL` — if a note has been dropped, encryption is likely already underway. All four observers write `BehaviorEvent` objects to `temporal_behaviors.jsonl`.
 
 ---
 
 ### Module 4 — Decision Engine
 
-`decision_engine.py` is the scoring and verdict layer. It receives `TaggedEvent` objects and produces a `DecisionResult`.
+`decision_engine.py` receives `TaggedEvent` objects and produces a structured `DecisionResult`. The score is a simple weighted sum — for each tag present, look up its weight in `BEHAVIOR_TAGS` and add it to the total. Tag weights run from 1 (`interactive_shell`, a near-meaningless signal on its own) up to 20 (`shadow_copy_deletion`, nearly always malicious).
 
-**Scoring formula:**
+That score then maps to a level. Anything below 5 is ignored. Score 5–14 is `LOW` — log it, accumulate context. Score 15–24 is `MEDIUM` — analyst review within 24 hours, and the YARA gate opens. Score 25–39 is `HIGH` — priority investigation within 4 hours. Score 40 and above is `CRITICAL` — immediate isolation recommended.
 
-```
-total_score = Σ BEHAVIOR_TAGS[tag]["weight"]  for each tag in event.tags
-```
-
-Tag weights range from 1 (weak signal, e.g. `interactive_shell`) to 20 (definitive indicator, e.g. `shadow_copy_deletion`).
-
-**Level mapping:**
-
-| Score | Level | SLA |
-|---|---|---|
-| ≥ 5 | `LOW` | Log and accumulate |
-| ≥ 15 | `MEDIUM` | Analyst review within 24 hours |
-| ≥ 25 | `HIGH` | Priority investigation within 4 hours |
-| ≥ 40 | `CRITICAL` | Immediate response — isolate system |
-
-**YARA gate** — YARA scanning is *not* run on every process. It is triggered only when `score ≥ MEDIUM threshold`. This keeps the hot path free of file I/O overhead for benign events. When YARA fires, matching rule names are attached to the `DecisionResult` and can elevate the alert level by one step.
-
-**Critical fast-path** — Any single event bearing `shadow_copy_deletion`, `boot_manipulation`, or `backup_deletion` immediately satisfies the CRITICAL threshold regardless of accumulated score.
+YARA is deliberately not run on every event. It is gated behind the MEDIUM threshold so that the hot path for benign processes stays free of file I/O overhead. When YARA does fire, matching rule names attach to the `DecisionResult` and can push the level one step higher. There is also a CRITICAL fast-path: any single event bearing `shadow_copy_deletion`, `boot_manipulation`, or `backup_deletion` satisfies the CRITICAL threshold immediately, regardless of accumulated score.
 
 ---
 
 ### Module 5 — ML Anomaly Scorer
 
-`ml_scorer.py` augments the rule-based decision with an ML layer. It runs after the Decision Engine and can *elevate* (but never suppress) the rule-based level.
+`ml_scorer.py` runs after the Decision Engine and can elevate, but never suppress, the rule-based level. Two models work together: an `IsolationForest` that flags process vectors statistically unusual against the training baseline, and a `GradientBoostingClassifier` trained on labeled benign and malicious examples.
 
-**Models:**
-- `IsolationForest` — unsupervised anomaly detector; identifies process vectors that are statistically unusual relative to the training baseline
-- `GradientBoostingClassifier` — supervised binary classifier trained on labeled benign/malicious examples
-
-**Feature vector (extracted from `TaggedEvent` + process telemetry):**
-
-| Feature Group | Examples |
-|---|---|
-| Process identity | Per-process risk score (vssadmin=90, bcdedit=85, powershell=30) |
-| Behavioral | Tag count, ransomware indicator count, session depth |
-| Command line | Entropy, length, suspicious keyword hits, base64 presence |
-| Lineage | Parent process risk score |
-| Temporal | Events in last 60s, 300s |
-
-Output: `MLScore` (ml_score 0–100, ml_score_pct, ml_confidence, top contributing features, model used, augmented_level). The model is persisted to `ml_model.pkl` and loaded at startup.
-
-**Design constraints:** <5ms per event latency; <20MB memory footprint; no network calls; pure Python.
+The feature vector is extracted entirely from process telemetry — no file I/O, no network calls. It includes a per-process risk score (vssadmin=90, bcdedit=85, powershell=30), behavioral counts like tag count and ransomware indicator count, command line entropy and length, suspicious keyword hits, base64 presence, parent process risk, and event velocity in the last 60 and 300 seconds. Output is an `MLScore` with a 0–100 score, confidence label, and the top contributing features. The model is serialized to `ml_model.pkl` at first training and loaded at startup on subsequent runs. Latency is under 5ms per event with under 20MB memory footprint.
 
 ---
 
 ### Module 6 — Evidence & Output Layer
 
-`output_layer.py` is pure output — no detection logic. It consumes `DecisionResult + MLScore` and produces:
+`output_layer.py` is pure output — no detection logic of its own. It takes a `DecisionResult` and optional `MLScore` and produces three things.
 
-**Colored console alerts** — ANSI-colored terminal output with score breakdown (top 3 contributing tags), YARA hit names, ML score percentage, MITRE technique IDs, and recommended action. Minimum console level is configurable (default: `MEDIUM`).
+The **console alert** is ANSI-colored terminal output showing the process, score, top 3 contributing tags with their weights, YARA hit names if any, ML score percentage, MITRE technique IDs, and the recommended action string. The minimum console level defaults to `MEDIUM` and is configurable.
 
-**`alerts.jsonl`** — One JSON object per alert. Fields include all process telemetry, full tag list, score breakdown, YARA hits, ML features, MITRE techniques, and recommended action. Structured for direct ingestion into Splunk, Elastic SIEM, or any JSONL-capable pipeline.
+**`alerts.jsonl`** receives one JSON object per alert carrying every field: process telemetry, the full tag list, score breakdown, YARA hits, ML features, MITRE techniques, verdict string, and recommended action. It is structured for direct ingestion into Splunk, Elastic SIEM, or any JSONL-capable pipeline.
 
-**`alert_summary.json`** — Session-level summary: total events, level distribution, YARA hit count, ML elevation count. Written on graceful shutdown.
+**`alert_summary.json`** is written on graceful shutdown and contains session-level totals: events emitted, counts per level, YARA hit count, and ML elevation count — intended as a quick analyst handoff document.
 
-**MITRE mapping** — Tags resolve to technique IDs automatically:
-
-| Tag | MITRE Technique |
-|---|---|
-| `shadow_copy_deletion` | T1490 — Inhibit System Recovery |
-| `encryption_activity` | T1486 — Data Encrypted for Impact |
-| `credential_access_attempt` | T1003 — OS Credential Dumping |
-| `lateral_movement` | T1021 — Remote Services |
-| `service_manipulation` | T1489 — Service Stop |
-| `network_share_discovery` | T1135 — Network Share Discovery |
-| `obfuscated_execution` | T1027 — Obfuscated Files/Information |
-| `persistence_attempt` | T1547 — Boot/Logon Autostart Execution |
-| `living_off_the_land` | T1218 — System Binary Proxy Execution |
+Every tag in the output resolves to a MITRE ATT&CK technique automatically. `shadow_copy_deletion` → T1490, `encryption_activity` → T1486, `credential_access_attempt` → T1003, `lateral_movement` → T1021, `service_manipulation` → T1489, `network_share_discovery` → T1135, `obfuscated_execution` → T1027, `persistence_attempt` → T1547, `living_off_the_land` → T1218.
 
 ---
 
 ## YARA Signatures
 
-Rules are stored in `rules/` and compiled once at startup. The scanner runs against the process executable path when the Decision Engine gates it.
+Rules live in `rules/` and are compiled once at startup by `SignatureScanner`. The scanner runs against the process executable path whenever the Decision Engine gates it at MEDIUM or above.
 
-| File | Family | Key Indicators |
-|---|---|---|
-| `lockbit.yar` | LockBit 3.0 / 4.0 | PE code patterns, `LockBit` strings, `.lockbit` extension, `UNIQUE_ID_DO_NOT_REMOVE` mutex |
-| `blackcat.yar` | BlackCat / ALPHV | Rust artifact `/rust/`, `ALPHV` strings, `enable_esxi_vm_kill`, `.alphv` extension |
-| `conti.yar` | Conti | MurmurHash2 bytecode, Conti strings, BTC markers |
-| `command_abuse.yar` | Generic HoR | Command-line strings: `vssadmin delete shadows`, `bcdedit /set`, `wbadmin delete catalog`, taskkill service stops |
-| `additional_ransomware_rules.yar` | REvil, Maze/Egregor, Cuba, Play, Akira | RC4/Salsa20 bytecode, ransom note markers, mutex patterns, config structure markers |
+`lockbit.yar` covers LockBit 3.0 and 4.0 via PE code patterns, the `LockBit` string family, `.lockbit` extension markers, and the `UNIQUE_ID_DO_NOT_REMOVE` mutex. `blackcat.yar` targets BlackCat/ALPHV using the Rust artifact path `/rust/`, `ALPHV` strings, `enable_esxi_vm_kill`, and the `.alphv` extension. `conti.yar` uses the leaked MurmurHash2 bytecode signature alongside Conti-specific strings. `command_abuse.yar` is the generic HoR rule — it scans the command line string directly for `vssadmin delete shadows`, `bcdedit /set`, `wbadmin delete catalog`, and service kill patterns, so it works regardless of whether the binary is packed. `additional_ransomware_rules.yar` adds coverage for REvil/Sodinokibi (RC4 and Salsa20 bytecode, campaign config markers), Maze/Egregor, Cuba, Play, and Akira.
 
-**Updating rules:** Drop new `.yar` files into `rules/` and restart SENTINEL. The `SignatureScanner` compiles all `.yar` files in the directory at init. Recommended quarterly update sources:
-- https://github.com/reversinglabs/reversinglabs-yara-rules
-- https://github.com/Yara-Rules/rules
-- https://malpedia.caad.fkie.fraunhofer.de/
-- https://www.ransomware.live/
+To add emerging threat coverage, drop a `.yar` file into `rules/` and restart SENTINEL. Good quarterly sources are the ReversingLabs YARA rules repository, Yara-Rules/rules, Malpedia, and ransomware.live.
 
 ---
 
@@ -304,40 +192,15 @@ HIGH     score ≥ 25   →  Priority investigation
 CRITICAL score ≥ 40   →  Immediate isolation recommended
 ```
 
-**Selected tag weights (full list in `behavior_tags.py`):**
+The heaviest weights are on the three definitive ransomware indicators: `shadow_copy_deletion` (20), `boot_manipulation` (20), and `backup_deletion` (18). Encryption activity carries 16, credential access 14, lateral movement 12. Obfuscation alone is only 4, and an interactive shell opening is 1 — almost noise by itself, but it accumulates. The session tag `multiple_ransomware_indicators` adds another 10 when the operator has made multiple incriminating moves in the same session.
 
-| Tag | Weight | Scope |
-|---|---|---|
-| `shadow_copy_deletion` | 20 | event |
-| `boot_manipulation` | 20 | event |
-| `backup_deletion` | 18 | event |
-| `encryption_activity` | 16 | event |
-| `credential_access_attempt` | 14 | event |
-| `lateral_movement` | 12 | event |
-| `obfuscated_execution` | 4 | event |
-| `multiple_ransomware_indicators` | 10 | session |
-| `living_off_the_land` / `lolbin_abuse` | 3 | event |
-| `interactive_shell` | 1 | session |
-
-A single `vssadmin delete shadows /all /quiet` command yields:
-`shadow_copy_deletion (20) + backup_deletion (18) + boot_manipulation (20) + ransomware_tool (8) = 66 → CRITICAL`
+The arithmetic is intentional. `vssadmin delete shadows /all /quiet` alone scores `shadow_copy_deletion (20) + backup_deletion (18) + boot_manipulation (20) + ransomware_tool (8) = 66` — well past CRITICAL from a single command. Full weights are documented in `behavior_tags.py`.
 
 ---
 
 ## MITRE ATT&CK Coverage
 
-| Technique | ID | Detection Method |
-|---|---|---|
-| Inhibit System Recovery | T1490 | Tag: `shadow_copy_deletion`, `boot_manipulation`, `backup_deletion`; YARA: `command_abuse.yar` |
-| Data Encrypted for Impact | T1486 | Tag: `encryption_activity`; YARA: family rules |
-| OS Credential Dumping | T1003 | Tag: `credential_access_attempt`; command pattern matching |
-| Remote Services | T1021 | Tag: `lateral_movement`; Temporal: `LateralMovementObserver` |
-| Service Stop | T1489 | Tag: `service_manipulation`; `sc stop` / `net stop` patterns |
-| Network Share Discovery | T1135 | Tag: `network_share_discovery`; `net view` / `net share` patterns |
-| Obfuscated Files/Information | T1027 | Tag: `obfuscated_execution`; Base64 / encoded command detection |
-| Boot/Logon Autostart | T1547 | Tag: `persistence_attempt`; Registry run key / schtasks patterns |
-| System Binary Proxy Execution | T1218 | Tag: `living_off_the_land`; LOLBin classification |
-| Access Token Manipulation | T1134 | Temporal: `PrivilegeEscalationObserver` |
+SENTINEL maps detection coverage to ten ATT&CK techniques. T1490 (Inhibit System Recovery) is covered by the `shadow_copy_deletion`, `boot_manipulation`, and `backup_deletion` tags plus `command_abuse.yar`. T1486 (Data Encrypted for Impact) by `encryption_activity` and the family YARA rules. T1003 (OS Credential Dumping) by `credential_access_attempt` and command pattern matching. T1021 (Remote Services) by the `lateral_movement` tag and `LateralMovementObserver`. T1489 (Service Stop) by `service_manipulation` and `sc stop` / `net stop` patterns. T1135 (Network Share Discovery) by `network_share_discovery`. T1027 (Obfuscated Files/Information) by `obfuscated_execution` and Base64 command detection. T1547 (Boot/Logon Autostart Execution) by `persistence_attempt`. T1218 (System Binary Proxy Execution) by LOLBin classification. T1134 (Access Token Manipulation) by the `PrivilegeEscalationObserver`.
 
 ---
 
@@ -367,39 +230,31 @@ sentinel/
 │   └── additional_ransomware_rules.yar  REvil, Maze, Cuba, Play, Akira
 │
 ├── ml_model.pkl                    Serialized ML models (auto-generated on first run)
-├── process_events.jsonl            Raw process telemetry (Module 1 output)
-├── enriched_events.jsonl           Tagged events (Module 2 output)
-├── temporal_behaviors.jsonl        Temporal behavior events (Module 3 output)
-├── alerts.jsonl                    Final alerts (Module 6 output) — SIEM ingest target
-├── alert_summary.json              Session-level analyst summary
+├── process_events.jsonl            Raw process telemetry — every process creation on host
+├── enriched_events.jsonl           Tagged events with scores, confidence, ransomware flags
+├── temporal_behaviors.jsonl        Time-window behavior events (lateral movement, file I/O)
+├── alerts.jsonl                    Final alerts — primary SIEM ingest target
+├── alert_summary.json              Session-level analyst summary (written on shutdown)
 └── integrated_detection.log        System debug log
 ```
+
+`process_events.jsonl`, `enriched_events.jsonl`, and `temporal_behaviors.jsonl` are live output files written by the running system, not configuration. The included samples in this repository were captured from a real test run against `generate_test_data.py` and show what actual telemetry looks like in each stage of the pipeline.
 
 ---
 
 ## Installation
 
-### Prerequisites
-
-- Windows 10 / 11 or Windows Server 2019 / 2022
-- Python **3.10 or later** (3.12 recommended)
-- **Administrator privileges** (required for WMI process telemetry and integrity level reads)
-- WMI service running: `net start winmgmt`
-
-### Steps
+SENTINEL runs on Windows 10/11 or Windows Server 2019/2022. Python 3.10 or later is required (3.12 recommended). Administrator privileges are required — without them, WMI telemetry and integrity level reads are unavailable. Confirm the WMI service is running before starting: `net start winmgmt`.
 
 ```bash
-# 1. Clone the repository
+# Clone the repository
 git clone https://github.com/jynxora/sentinel.git
 cd sentinel
-```
 
-```bash
-# 2. Install Python dependencies
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-**`requirements.txt`:**
 ```
 wmi
 pywin32
@@ -414,83 +269,65 @@ colorama
 ```
 
 ```bash
-# 3. Verify YARA rule compilation (optional sanity check)
+# Verify YARA rules compile cleanly (optional sanity check)
 python -c "from signature_scanner import SignatureScanner; s = SignatureScanner('rules/'); print('YARA OK')"
+
+# Pre-train the ML model (optional — happens automatically on first run otherwise)
+python ml_scorer.py
 ```
+
+On some systems `pywin32` post-install scripts need to be run manually after `pip install`:
 
 ```bash
-# 4. (Optional) Pre-train the ML model
-python ml_scorer.py
-# Model saved to ml_model.pkl — this step is skipped on subsequent runs
+python Scripts/pywin32_postinstall.py -install
 ```
-
-> **Note:** `temporal_observers.py` requires `win32security`, `win32api`, `win32file` from the `pywin32` package. On some systems `pywin32` post-install scripts must be run manually:
-> `python Scripts/pywin32_postinstall.py -install`
 
 ---
 
 ## Running SENTINEL
 
-### Full integrated system (recommended)
+Run the main orchestrator as Administrator. This starts all six modules in coordinated threads — the WMI watcher, the queue-based tagger, the four temporal observers in background threads, and the scoring/output pipeline on every enriched event.
 
 ```bash
-# Run as Administrator
 python integrated_detection_system.py
 ```
 
-This starts all modules in coordinated threads:
-- Module 1 WMI watcher
-- Module 2 tagger (queue-based, non-blocking)
-- Module 3 temporal observers (background threads)
-- Module 4+5+6 on every enriched event
+Stop with `Ctrl+C`. Graceful shutdown writes `alert_summary.json` before exiting.
 
-Stop with `Ctrl+C` — graceful shutdown writes `alert_summary.json`.
-
-### Dashboard (companion process)
+The browser dashboard runs as a companion process in a second terminal. It tails `enriched_events.jsonl` and `alerts.jsonl` in real time and pushes events to the browser via WebSocket.
 
 ```bash
-# In a second terminal (also as Administrator)
 python dashboard_server.py
 # Open http://localhost:5000
 ```
 
-The dashboard server tails `enriched_events.jsonl` and `alerts.jsonl` in real time and streams events to the browser via WebSocket.
-
-### Standalone module testing
+Individual modules can be run standalone for testing and tuning:
 
 ```bash
-# Test the Decision Engine on a synthetic event
-python decision_engine.py
-
-# Test the Output Layer with a mock CRITICAL result
-python output_layer.py
-
-# Generate synthetic test events for tuning
-python generate_test_data.py
+python decision_engine.py      # Test scoring against a synthetic CRITICAL event
+python output_layer.py         # Test console output formatting
+python generate_test_data.py   # Replay a simulated attack sequence
 ```
 
 ---
 
 ## Dashboard
 
-The browser dashboard (`dashboard.html` served by `dashboard_server.py`) provides:
-
-- **Live event feed** — real-time process events with tags, scores, and severity badges
-- **Alert severity panel** — `LOW / MEDIUM / HIGH / CRITICAL` counts updated per event
-- **ML score overlay** — per-event ML anomaly score and confidence
-- **Stats bar** — total events, alert rate, YARA hit count, ML elevation count
-- **WebSocket streaming** — sub-second latency via `flask-socketio`
-- **REST endpoints** — `/api/events`, `/api/stats`, `/api/alerts` for programmatic access
-
-Access at `http://localhost:5000` while `dashboard_server.py` is running.
+The dashboard at `http://localhost:5000` streams events live via WebSocket with sub-second latency. It shows a live event feed with tags, scores, and severity badges; a four-level severity panel updated per event; per-event ML anomaly scores and confidence labels; and a stats bar tracking total events, alert rate, YARA hits, and ML elevations. REST endpoints at `/api/events`, `/api/stats`, and `/api/alerts` are available for programmatic access or integration with external tooling.
 
 ---
 
 ## Output Files
 
-### `alerts.jsonl`
+SENTINEL writes four files during a run. The first three are written by the detection modules and exist whether or not any alerts fire. The fourth is the final alert log.
 
-One JSON object per alert (MEDIUM and above by default). Key fields:
+**`process_events.jsonl`** is Module 1's raw output — one JSON object per process creation, capturing every field WMI provides: timestamp, process name, PID, parent PID, command line, username, executable path, and resolved parent process name and command line. This is the ground-truth telemetry log.
+
+**`enriched_events.jsonl`** is Module 2's output — the same events with behavioral tags, confidence, ransomware indicator flags, and session-level counters (`shell_count`, `lolbin_count`, `ransomware_score`) appended. This is the file the Decision Engine reads, and the file the dashboard server tails for live streaming.
+
+**`temporal_behaviors.jsonl`** is Module 3's output — behavior events emitted by the four temporal observers when time-window patterns cross their thresholds. Each event records the observer source, behavior type, confidence, score, evidence list, metadata (tool, targets, attempt count), and the associated username and process name.
+
+**`alerts.jsonl`** is the final output of Module 6 — one JSON object per alert at MEDIUM level or above. A representative CRITICAL alert looks like this:
 
 ```jsonc
 {
@@ -509,7 +346,7 @@ One JSON object per alert (MEDIUM and above by default). Key fields:
     {"tag": "boot_manipulation",    "weight": 20, "rationale": "MITRE T1490"}
   ],
   "yara_triggered": true,
-  "yara_hits": ["Ransomware_Generic", "LockBit_Shadow"],
+  "yara_hits": ["Ransomware_Command_Abuse", "Win32_Ransomware_LockBit"],
   "ml_score": 0.94,
   "ml_score_pct": 94,
   "ml_confidence": "high",
@@ -520,12 +357,11 @@ One JSON object per alert (MEDIUM and above by default). Key fields:
 }
 ```
 
-### `alert_summary.json`
+On graceful shutdown, `alert_summary.json` is written with session totals:
 
 ```jsonc
 {
   "generated_at": "2026-01-30T15:00:00",
-  "alert_log": "alerts.jsonl",
   "statistics": {
     "total_emitted": 142,
     "level_counts": {"low": 89, "medium": 31, "high": 14, "critical": 8},
@@ -539,153 +375,106 @@ One JSON object per alert (MEDIUM and above by default). Key fields:
 
 ## Tuning & Calibration
 
-SENTINEL ships with default thresholds tuned for a moderate-security enterprise environment. **Before production deployment, calibrate against your baseline:**
+The shipped thresholds are calibrated for a moderate-security enterprise environment. Before production deployment, run SENTINEL on 7–14 days of known-good activity with all alerts logged at `LOW`, then analyze `enriched_events.jsonl` for false positive patterns. Add recurring legitimate patterns to `ExclusionRules` in `behavior_tags.py`.
 
-1. Run SENTINEL on 7–14 days of **known-good activity** with all alerts logged at `LOW` level
-2. Analyze `enriched_events.jsonl` for false positive patterns
-3. Add known-good process signatures to `ExclusionRules` in `behavior_tags.py`
-4. Adjust `ThresholdConfig` values in `behavior_tags.py` for your environment:
-   - `REPEATED_SHELL_THRESHOLD` — how many shells before `repeated_shell_activity` fires
-   - `LOLBIN_THRESHOLD` — how many LOLBins before `multiple_lolbin_usage` fires
-   - `FILE_IO_MASS_READ_THRESHOLD` — file reads/minute before FileIOObserver alerts
-5. Adjust `RISK_THRESHOLDS` (LOW=5 / MEDIUM=15 / HIGH=25 / CRITICAL=40) to reduce noise
-6. Re-validate quarterly as the environment evolves
+Three values in `ThresholdConfig` (also in `behavior_tags.py`) control session-level sensitivity: `REPEATED_SHELL_THRESHOLD` determines how many shells open before the session tag fires, `LOLBIN_THRESHOLD` how many LOLBins before `multiple_lolbin_usage` fires, and `FILE_IO_MASS_READ_THRESHOLD` how many file reads per minute before `FileIOObserver` alerts. Adjust `RISK_THRESHOLDS` itself only as a last resort — the individual tag weights are a finer-grained instrument.
 
-**Target false positive rates:**
-
-| Level | Acceptable FP Rate |
-|---|---|
-| LOW | 20–30% (monitoring only) |
-| MEDIUM | 5–10% (requires analyst review) |
-| HIGH | < 2% (priority queue) |
-| CRITICAL | < 0.5% (immediate response triggered) |
+Target false positive rates by level: LOW can tolerate 20–30% (it's monitoring-only), MEDIUM should stay under 10% (it requires analyst review), HIGH under 2% (it goes to a priority queue), and CRITICAL under 0.5% (it triggers an immediate response workflow). Re-validate quarterly.
 
 ---
 
 ## Visual POC
 
-> The screenshots below show SENTINEL detecting a simulated LockBit pre-encryption sequence against synthetic test data generated by `generate_test_data.py`.
+The screenshots below show SENTINEL running against synthetic test data generated by `generate_test_data.py`, replaying a simulated LockBit pre-encryption operator session.
 
-### Terminal Alert Output — CRITICAL Detection
+**Place your screenshots in `docs/screenshots/` and update the paths below.** Three captures are most useful: the terminal output during a CRITICAL detection, the live dashboard in the browser, and an `alerts.jsonl` extract in a JSON viewer.
+
+```markdown
+![Terminal — CRITICAL alert](docs/screenshots/terminal_critical.png)
+![Dashboard — live event stream](docs/screenshots/dashboard_live.png)
+![alerts.jsonl — CRITICAL entry](docs/screenshots/alerts_jsonl.png)
+```
+
+To reproduce the POC sequence yourself:
+
+```bash
+# Terminal 1 — start the detection system
+python integrated_detection_system.py
+
+# Terminal 2 — start the dashboard
+python dashboard_server.py
+
+# Terminal 3 — replay the attack sequence
+python generate_test_data.py
+```
+
+The sequence escalates across roughly 4 minutes of operator activity:
 
 ```
-──────────────────────────────────────────────────────────────────────────
+T+00s  [LOW]      whoami /all                          score:  2  → discovery
+T+18s  [LOW]      ipconfig /all                        score:  3  → discovery
+T+45s  [MEDIUM]   net view /domain                     score: 17  → YARA gate opens
+T+72s  [HIGH]     psexec \\DC01 cmd.exe                score: 28  → lateral movement
+T+95s  [HIGH]     wmic shadowcopy delete               score: 31  → backup interference
+T+110s [CRITICAL] vssadmin delete shadows /all /quiet  score: 66  → ISOLATE NOW
+T+118s [CRITICAL] bcdedit /set recoveryenabled no      score: 58  → boot sabotage
+```
+
+The corresponding terminal output at the CRITICAL event:
+
+```
+──────────────────────────────────────────────────────────────────────
 [CRITICAL] vssadmin.exe  (PID 4321)
-──────────────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────
   Time   : 2026-01-30T14:22:10.441123
   User   : CORP\attacker
   Cmd    : vssadmin delete shadows /all /quiet
   Score  : 66  →  CRITICAL
   Signals: +20 shadow_copy_deletion  +20 boot_manipulation  +18 backup_deletion
   YARA   : HIT → Ransomware_Command_Abuse, Win32_Ransomware_LockBit
-  ML     : ML: 94%  (high) ↑ ELEVATED to CRITICAL
+  ML     : 94%  (high)  ↑ ELEVATED to CRITICAL
   MITRE  : T1490 - Inhibit System Recovery
   Action : IMMEDIATE RESPONSE — isolate system and begin incident response.
-──────────────────────────────────────────────────────────────────────────
-```
-
-### Multi-Stage Attack Sequence (Simulated LockBit Run)
-
-The following sequence illustrates how SENTINEL escalates across a 4-minute operator session:
-
-```
-T+00s  [LOW]      whoami /all                          score: 2  → discovery
-T+18s  [LOW]      ipconfig /all                        score: 3  → discovery
-T+45s  [MEDIUM]   net view /domain                     score: 17 → YARA gate opens
-T+72s  [HIGH]     psexec \\DC01 cmd.exe               score: 28 → lateral movement
-T+95s  [HIGH]     wmic shadowcopy delete               score: 31 → backup interference
-T+110s [CRITICAL] vssadmin delete shadows /all /quiet  score: 66 → ISOLATE NOW
-T+118s [CRITICAL] bcdedit /set recoveryenabled no      score: 58 → boot sabotage
-```
-
-### Dashboard — Live Alert Stream
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  SENTINEL  ●  Live  │  Events: 247  │  Alerts: 8  │  YARA Hits: 3   │
-├────────────────────┬──────────────┬──────────────┬──────────────────┤
-│  LOW  89           │  MEDIUM  31  │  HIGH  14    │  CRITICAL  8     │
-├────────────────────┴──────────────┴──────────────┴──────────────────┤
-│  14:22:10  vssadmin.exe    CORP\attacker    [CRITICAL]  score:66     │
-│            ↳ shadow_copy_deletion  boot_manipulation  backup_deletion│
-│            ↳ YARA: Ransomware_Command_Abuse  ML: 94%                │
-│  14:21:50  psexec.exe      CORP\attacker    [HIGH]      score:28     │
-│  14:21:27  wmic.exe        CORP\attacker    [MEDIUM]    score:17     │
-│  14:20:30  cmd.exe         CORP\attacker    [LOW]       score: 3     │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-> **Note:** Replace the text POC panels above with actual screenshots of your deployment. Capture: (1) terminal during `generate_test_data.py` replay, (2) the dashboard in browser, (3) a `alerts.jsonl` extract in a JSON viewer. Store images in `docs/screenshots/` and update the image paths below:
-
-```markdown
-![Terminal Alert](docs/screenshots/terminal_critical.png)
-![Dashboard Live](docs/screenshots/dashboard_live.png)
-![alerts.jsonl](docs/screenshots/alerts_jsonl.png)
+──────────────────────────────────────────────────────────────────────
 ```
 
 ---
 
 ## Limitations
 
-**Windows-only.** SENTINEL relies on WMI, Win32 APIs, and `pywin32`. It does not run on Linux or macOS. Process telemetry on Linux equivalents (eBPF, auditd) would require a separate implementation.
+**Windows-only.** SENTINEL depends on WMI, `pywin32`, and Win32 APIs. It does not run on Linux or macOS. Equivalent telemetry on Linux (eBPF, auditd) would require a separate implementation.
 
-**No kernel-mode visibility.** SENTINEL operates entirely in user mode. A sophisticated attacker who disables WMI (`net stop winmgmt`), kills the SENTINEL process before executing ransomware commands, or uses direct syscalls to avoid Win32 API telemetry will not be detected. Kernel-mode EDR or a SIEM with Windows Event Log (Event ID 4688) as a secondary telemetry source is recommended for defense-in-depth.
+**No kernel-mode visibility.** SENTINEL operates entirely in user mode. An attacker who disables WMI (`net stop winmgmt`), kills the SENTINEL process before executing ransomware commands, or uses direct syscalls to avoid Win32 API telemetry will not be detected. A kernel-mode EDR or a SIEM fed by Windows Event Log Event ID 4688 is recommended as a complementary layer.
 
-**Pre-encryption only.** SENTINEL detects *operator commands* — it does not scan files for encryption in progress or detect fileless ransomware payloads executing in memory. If the operator skips the shadow copy deletion step (rare but possible), the CRITICAL fast-path will not trigger. Behavioral scoring still accumulates from other signals.
+**Pre-encryption only.** SENTINEL detects operator commands. It does not scan files for encryption in progress or detect fileless ransomware executing in memory. If an operator skips shadow copy deletion (rare but possible), the CRITICAL fast-path will not trigger, though behavioral scoring still accumulates from other signals.
 
-**WMI polling latency.** The `watch_for()` watcher polls at `timeout_ms=100`. In a worst case, a short-lived process (sub-100ms execution) may be missed. This is an inherent WMI limitation. Sysmon with Event ID 1 (`ProcessCreate`) is a more reliable telemetry source and can be parsed as an alternative input to Module 1.
+**WMI polling latency.** The `watch_for()` watcher polls at `timeout_ms=100`. A process that completes in under 100ms may be missed. This is an inherent WMI ceiling — Sysmon Event ID 1 (`ProcessCreate`) is a more reliable telemetry source and can be used as an alternative input to Module 1.
 
-**YARA scans the executable on disk.** The `SignatureScanner` scans the `executable_path` of the process. If the binary is packed, polymorphic, or the path is unavailable (e.g., a reflectively loaded DLL), YARA will not match. Command-line string rules in `command_abuse.yar` scan the command line string directly and are not affected by this limitation.
+**YARA scans the executable on disk.** `SignatureScanner` scans `executable_path`. If the binary is packed, polymorphic, or the path is unavailable (e.g. a reflectively loaded DLL), YARA will not match. Command-line rules in `command_abuse.yar` scan the command string directly and are unaffected by this.
 
-**ML model is environment-specific.** The shipped `ml_model.pkl` is trained on synthetic data. In production, retrain on 7–14 days of your environment's baseline before relying on ML elevation decisions. Use `generate_test_data.py` combined with real benign telemetry for training.
+**The shipped ML model is trained on synthetic data.** Retrain on 7–14 days of your environment's real baseline before relying on ML elevation decisions in production. `generate_test_data.py` combined with captured benign telemetry provides the training set.
 
-**No network traffic inspection.** Lateral movement detected by `LateralMovementObserver` is inferred from process creation (PsExec execution, `wmic /node:` command lines). Actual network connection establishment is not monitored. A network-level IDS or firewall log integration is complementary.
+**No network traffic inspection.** Lateral movement is inferred from process creation — PsExec execution and `wmic /node:` command lines. Actual network connections are not monitored. A network-level IDS or firewall log feed is complementary.
 
-**SSD / TRIM / drive encryption false positives.** `cipher.exe` triggered legitimately (e.g., encrypted folder operations) will score as `encryption_activity`. Calibrate the exclusion rules for your environment's legitimate cipher usage.
+**`cipher.exe` false positives.** Legitimate encrypted folder operations will score as `encryption_activity`. Add your environment's normal cipher usage patterns to `ExclusionRules` in `behavior_tags.py` during calibration.
 
-**High-privilege requirement.** Without Administrator privileges, `GetOwner()` and integrity level reads will fail silently. SENTINEL degrades to process-name-and-command-line-only telemetry, reducing detection fidelity for privilege escalation and credential access events.
+**Privilege requirement is hard.** Without Administrator, `GetOwner()` and integrity level reads fail silently. SENTINEL degrades to process-name-and-command-line-only telemetry, losing privilege escalation and most credential access detection fidelity.
 
 ---
 
 ## Ransomware Families Covered
 
-| Family | Detection Method | Rules / Tags |
-|---|---|---|
-| LockBit 3.0 / 4.0 | YARA + behavioral | `lockbit.yar`, `shadow_copy_deletion`, `boot_manipulation` |
-| BlackCat / ALPHV | YARA + behavioral | `blackcat.yar`, ESXi kill commands |
-| Conti | YARA + behavioral | `conti.yar`, MurmurHash2 bytecode |
-| REvil / Sodinokibi | YARA + behavioral | `additional_ransomware_rules.yar`, RC4/Salsa20 patterns |
-| Ryuk | Behavioral | `vssadmin resize shadowstorage /maxsize=401mb` (Ryuk-specific) |
-| Maze / Egregor | YARA | `additional_ransomware_rules.yar` |
-| Cuba | YARA | `additional_ransomware_rules.yar` |
-| Play | YARA | `additional_ransomware_rules.yar` |
-| Akira | YARA | `additional_ransomware_rules.yar` |
-| Generic HoR | YARA + behavioral | `command_abuse.yar`, all behavioral tags |
+LockBit 3.0 and 4.0 are covered by `lockbit.yar` plus the `shadow_copy_deletion` and `boot_manipulation` behavioral tags. BlackCat/ALPHV by `blackcat.yar` including ESXi kill command detection. Conti by `conti.yar` using the leaked MurmurHash2 bytecode. REvil/Sodinokibi by `additional_ransomware_rules.yar` with RC4/Salsa20 bytecode patterns. Ryuk by the behavioral tag for the Ryuk-specific command `vssadmin resize shadowstorage /maxsize=401mb`. Maze/Egregor, Cuba, Play, and Akira are all in `additional_ransomware_rules.yar`. Generic HoR operators — those not using a named payload — are caught by `command_abuse.yar` and the full behavioral tag set.
 
 ---
 
 ## Contributing
 
-Pull requests are welcome. Before opening one:
+Before opening a pull request, run `generate_test_data.py` against your changes and verify no regressions in CRITICAL detection for the `vssadmin delete shadows` and `bcdedit` test cases. New YARA rules must include `meta.author`, `meta.date`, `meta.mitre_technique`, and `meta.false_positive_risk`. New behavior tags must appear in both `BEHAVIOR_TAGS` (with `weight`, `scope`, and `rationale`) and `TAG_DESCRIPTIONS` in `behavior_tags.py`. Threshold changes require updated documentation here.
 
-1. Run the test data generator against your changes: `python generate_test_data.py`
-2. Verify no regressions in CRITICAL detection for the `vssadmin delete shadows` and `bcdedit` test cases
-3. New YARA rules must include `meta.author`, `meta.date`, `meta.mitre_technique`, and `meta.false_positive_risk`
-4. New behavior tags must be added to both `BEHAVIOR_TAGS` (with `weight`, `scope`, `rationale`) and `TAG_DESCRIPTIONS` in `behavior_tags.py`
-5. Threshold changes require updated documentation in this README
+To report a false positive or missed detection, open an issue with the exact command line that triggered or failed to trigger an alert, the process name and parent process name, the level SENTINEL produced versus what you expected, and whether the host was domain-joined and the user's privilege level at the time.
 
-**To report a false positive or missed detection, open an issue with:**
-- The exact command line that triggered (or failed to trigger) an alert
-- The process name and parent process name
-- The level SENTINEL produced vs. the level you expected
-- Whether the event was on a domain-joined host and the user privilege level
-
-**Rule update sources (quarterly recommended):**
-- https://github.com/reversinglabs/reversinglabs-yara-rules
-- https://github.com/advanced-threat-research/Yara-Rules
-- https://github.com/Yara-Rules/rules
-- https://malpedia.caad.fkie.fraunhofer.de/
-- https://www.cisa.gov/ransomware
+Rule update sources worth checking quarterly: the ReversingLabs YARA rules repository, Yara-Rules/rules, the ATD YARA rules repository, Malpedia, and the CISA ransomware advisory page.
 
 ---
 
