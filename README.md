@@ -389,7 +389,7 @@ The screenshots below show SENTINEL running against synthetic test data generate
 
 Three captures are most useful: the terminal output during a CRITICAL detection, the live dashboard in the browser, and an `alerts.jsonl` extract in a JSON viewer.
 
-```markdown
+
 ![Terminal — CRITICAL alert](https://github.com/jynxora/SENTINEL-Pre-Encryption-Ransomware-Detection-System/blob/main/screenshots/terminal_critical.png)
 
 ![Dashboard — live event stream](https://github.com/jynxora/SENTINEL-Pre-Encryption-Ransomware-Detection-System/blob/main/screenshots/dashboard_live.png)
@@ -398,7 +398,6 @@ Three captures are most useful: the terminal output during a CRITICAL detection,
 
 [alerts.jsonl — CRITICAL entry](https://github.com/jynxora/SENTINEL-Pre-Encryption-Ransomware-Detection-System/blob/main/screenshots/alerts_jsonl.png)
 
-```
 
 To reproduce the POC sequence yourself:
 
