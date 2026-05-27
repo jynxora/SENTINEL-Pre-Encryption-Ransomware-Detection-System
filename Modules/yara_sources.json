@@ -1,0 +1,51 @@
+{
+  "sources": [
+    {
+      "name": "ReversingLabs Ransomware",
+      "url": "https://raw.githubusercontent.com/reversinglabs/reversinglabs-yara-rules",
+      "branch": "develop",
+      "path": "yara/ransomware",
+      "enabled": true,
+      "last_update": null,
+      "file_patterns": [
+        "*.yar",
+        "*.yara"
+      ]
+    },
+    {
+      "name": "Elastic Protections",
+      "url": "https://raw.githubusercontent.com/elastic/protections-artifacts",
+      "branch": "main",
+      "path": "yara/rules",
+      "enabled": true,
+      "last_update": null,
+      "file_patterns": [
+        "Windows_Ransomware_*.yar"
+      ]
+    },
+    {
+      "name": "Yara-Rules Repository",
+      "url": "https://raw.githubusercontent.com/Yara-Rules/rules",
+      "branch": "master",
+      "path": "ransomware",
+      "enabled": true,
+      "last_update": null,
+      "file_patterns": [
+        "*.yar",
+        "*.yara"
+      ]
+    },
+    {
+      "name": "Malpedia",
+      "url": "https://malpedia.caad.fkie.fraunhofer.de/api/get/yara/auto",
+      "branch": "",
+      "path": "",
+      "enabled": false,
+      "last_update": null,
+      "file_patterns": [
+        "*.yara"
+      ]
+    }
+  ],
+  "last_updated": "2026-02-03T00:47:35.992867"
+}
